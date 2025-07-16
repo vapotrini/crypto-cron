@@ -2,17 +2,18 @@ name: Update Crypto Cache
 
 on:
   schedule:
-    - cron: '*/10 * * * *'      # every 10 min
-  workflow_dispatch:            # manual run button
+    - cron: '*/10 * * * *'        # every 10 min
+  workflow_dispatch:              # manual run button
 
 jobs:
   run:
     runs-on: ubuntu-latest
-    env:                        # expose secrets to Node
+    env:                          # expose secrets to Node
       EXPO_PUBLIC_LUNARCRUSH_API_KEY: ${{ secrets.EXPO_PUBLIC_LUNARCRUSH_API_KEY }}
-      EXPO_PUBLIC_SUPABASE_ANON_KEY:   ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
+      EXPO_PUBLIC_SUPABASE_ANON_KEY:  ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
       EXPO_PUBLIC_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_SERVICE_ROLE_KEY }}
+
     steps:
       - uses: actions/checkout@v4
-      - name: Run cache update script
-        run: node api/cron/update-crypto-data.js
+      - name: Run cache-update script
+        run: node api/cron/update-crypto-data.cjs
