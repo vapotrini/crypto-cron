@@ -12,5 +12,11 @@ jobs:
       LUNARCRUSH_API_KEY: ${{ secrets.LUNARCRUSH_API_KEY }}
     steps:
       - uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: npm install
       - name: Run cache-update script
         run: node api/cron/update-crypto-data.cjs
