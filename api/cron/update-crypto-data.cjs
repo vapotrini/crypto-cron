@@ -1,297 +1,239 @@
-// api/cron/update-crypto-data.js
+// api/cron/update-crypto-data.cjs
+/* eslint-disable no-console */
+
+// ────────────────────────────────
+// 0. IMPORTS
+// ────────────────────────────────
 const { createClient } = require('@supabase/supabase-js');
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-);
+// (GitHub runners already have fetch in Node 20; remove the next line if not needed.)
+// global.fetch ??= (...a) => import('node-fetch').then(m => m.default(...a));
 
+// ────────────────────────────────
+// 1. ENV-VAR CHECKS
+// ────────────────────────────────
+const SUPABASE_URL                  = process.env.EXPO_PUBLIC_SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE_KEY     = process.env.EXPO_PUBLIC_SUPABASE_SERVICE_ROLE_KEY;
+const LUNARCRUSH_API_KEY            = process.env.EXPO_PUBLIC_LUNARCRUSH_API_KEY;
+
+if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY || !LUNARCRUSH_API_KEY) {
+  console.error(
+    '❌  Missing env vars: EXPO_PUBLIC_SUPABASE_URL, ' +
+    'EXPO_PUBLIC_SUPABASE_SERVICE_ROLE_KEY, EXPO_PUBLIC_LUNARCRUSH_API_KEY',
+  );
+  process.exit(1);
+}
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+
+// ────────────────────────────────
+// 2. LUNARCRUSH CACHING SERVICE
+// ────────────────────────────────
 class CachingLunarCrushService {
   constructor() {
     this.baseURL = 'https://lunarcrush.com/api4/public';
-    this.apiKey = process.env.LUNARCRUSH_API_KEY; // Server-side env var
+    this.apiKey  = LUNARCRUSH_API_KEY;
   }
 
+  /* generic fetch helper — 1 sec throttle */
   async makeRequest(endpoint, params = {}) {
-    await new Promise(resolve => setTimeout(resolve, 1000)); // Rate limiting
+    await new Promise(r => setTimeout(r, 1_000));          // rudimentary rate-limit
 
     const url = new URL(`${this.baseURL}${endpoint}`);
-    if (this.apiKey) {
-      url.searchParams.append('key', this.apiKey);
-    }
-    
-    Object.keys(params).forEach(key => {
-      if (params[key] !== undefined && params[key] !== null) {
-        url.searchParams.append(key, params[key]);
-      }
-    });
-
-    const response = await fetch(url.toString(), {
-      method: 'GET',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
-    });
-
-    if (!response.ok) {
-      throw new Error(`API request failed: ${response.status}`);
+    url.searchParams.append('key', this.apiKey);
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== null) url.searchParams.append(k, v);
     }
 
-    return await response.json();
+    const res = await fetch(url, { headers: { Accept: 'application/json' } });
+    if (!res.ok) throw new Error(`${endpoint} → HTTP ${res.status}`);
+    return res.json();
   }
 
+  /* ── group: TRENDS ───────────────────────────────────── */
   async cacheTrendsData() {
-    console.log('🔄 Caching trends data...');
-    
+    console.log('🔄  Caching trends data…');
+
     const [trendingCoins, topCreators, hotSectors, galaxyLeaders] = await Promise.all([
       this.makeRequest('/coins/list/v1'),
       this.makeRequest('/category/cryptocurrencies/creators/v1'),
       this.makeRequest('/categories/list/v1'),
-      this.makeRequest('/coins/list/v1')
+      this.makeRequest('/coins/list/v1'),
     ]);
 
-    // Apply your filtering logic
+    /* blacklist filter */
     const blacklist = [
-      'MEXC', 'eToro', 'Power Slap', 'powerslap', 'KRSNA', 'CoinEx', 'KuCoin', 'Luno', 
-      'Binance', 'Coinbase', 'Kraken', 'ESPN', 'Fox News', 'CNN', 'NBC',
-      'ABC', 'CBS', 'OKX', 'Bybit', 'Gate.io', 'Huobi', 'bitgetglobal', 'cryptocom',
-      'Bitget', 'Crypto.com', "Bitcoinmagazine", "fantompro1", "Cointelegraph"
+      'mexc','etoro','power slap','powerslap','krsna','coinex','kucoin','luno',
+      'binance','coinbase','kraken','espn','fox news','cnn','nbc',
+      'abc','cbs','okx','bybit','gate.io','huobi','bitgetglobal','cryptocom',
+      'bitget','crypto.com','bitcoinmagazine','fantompro1','cointelegraph',
     ];
-    
-    const filteredCreators = (topCreators?.data || []).filter(creator => 
-      !blacklist.some(blocked => 
-        creator.creator_name?.toLowerCase().includes(blocked.toLowerCase())
-      )
+
+    const filteredCreators = (topCreators?.data || []).filter(c =>
+      !blacklist.some(b => c.creator_name?.toLowerCase().includes(b)),
     ).slice(0, 10);
 
     const sortedCoins = (trendingCoins?.data || [])
-      .filter(coin => coin.interactions_24h > 0)
+      .filter(c => c.interactions_24h > 0)
       .sort((a, b) => (b.interactions_24h || 0) - (a.interactions_24h || 0))
       .slice(0, 10);
 
     const alphaLeaders = (galaxyLeaders?.data || [])
-      .filter(coin => coin.galaxy_score >= 60)
+      .filter(c => c.galaxy_score >= 60)
       .sort((a, b) => (b.galaxy_score || 0) - (a.galaxy_score || 0))
       .slice(0, 10);
 
-    // Cache individual endpoints
     await Promise.all([
-      this.cacheData('trends_trending_coins', '/coins/list/v1', sortedCoins),
-      this.cacheData('trends_top_creators', '/category/cryptocurrencies/creators/v1', filteredCreators),
-      this.cacheData('trends_hot_sectors', '/categories/list/v1', (hotSectors?.data || []).slice(0, 8)),
-      this.cacheData('trends_galaxy_leaders', '/coins/list/v1', alphaLeaders)
+      this.cacheData('trends_trending_coins',   '/coins/list/v1', sortedCoins),
+      this.cacheData('trends_top_creators',     '/category/cryptocurrencies/creators/v1', filteredCreators),
+      this.cacheData('trends_hot_sectors',      '/categories/list/v1', (hotSectors?.data || []).slice(0, 8)),
+      this.cacheData('trends_galaxy_leaders',   '/coins/list/v1', alphaLeaders),
     ]);
 
-    console.log('✅ Trends data cached');
+    console.log('✅  Trends cached');
   }
 
+  /* ── group: MARKET ───────────────────────────────────── */
   async cacheMarketData() {
-    console.log('🔄 Caching market data...');
-    
-    const [allCoins, cryptoCategory, defiCategory, galaxyLeaders] = await Promise.all([
+    console.log('🔄  Caching market data…');
+
+    const [allCoins, cryptoCategory, defiCategory] = await Promise.all([
       this.makeRequest('/coins/list/v1'),
       this.makeRequest('/category/cryptocurrencies/v1'),
       this.makeRequest('/category/defi/v1'),
-      this.makeRequest('/coins/list/v1')
     ]);
 
     const coins = allCoins?.data || [];
 
     const topGainers = [...coins]
-      .filter(coin => coin.percent_change_24h > 0)
+      .filter(c => c.percent_change_24h > 0)
       .sort((a, b) => (b.percent_change_24h || 0) - (a.percent_change_24h || 0))
       .slice(0, 10);
 
     const altRankChampions = [...coins]
-      .filter(coin => coin.alt_rank)
-      .sort((a, b) => (a.alt_rank || 999999) - (b.alt_rank || 999999))
+      .filter(c => c.alt_rank)
+      .sort((a, b) => (a.alt_rank || 1e9) - (b.alt_rank || 1e9))
       .slice(0, 10);
 
     const sentimentLeaders = [...coins]
-      .filter(coin => coin.sentiment)
+      .filter(c => c.sentiment)
       .sort((a, b) => (b.sentiment || 0) - (a.sentiment || 0))
       .slice(0, 10);
 
     await Promise.all([
-      this.cacheData('market_top_gainers', '/coins/list/v1', topGainers),
-      this.cacheData('market_crypto_category', '/category/cryptocurrencies/v1', cryptoCategory?.data || []),
-      this.cacheData('market_defi_category', '/category/defi/v1', defiCategory?.data || []),
-      this.cacheData('market_altrank_champions', '/coins/list/v1', altRankChampions),
-      this.cacheData('market_sentiment_leaders', '/coins/list/v1', sentimentLeaders)
+      this.cacheData('market_top_gainers',        '/coins/list/v1', topGainers),
+      this.cacheData('market_crypto_category',    '/category/cryptocurrencies/v1', cryptoCategory?.data || []),
+      this.cacheData('market_defi_category',      '/category/defi/v1', defiCategory?.data || []),
+      this.cacheData('market_altrank_champions',  '/coins/list/v1', altRankChampions),
+      this.cacheData('market_sentiment_leaders',  '/coins/list/v1', sentimentLeaders),
     ]);
 
-    console.log('✅ Market data cached');
+    console.log('✅  Market cached');
   }
 
+  /* ── group: LATEST ───────────────────────────────────── */
   async cacheLatestData() {
-    console.log('🔄 Caching latest data...');
-    
-    const [bitcoinData, ethereumData, solanaData, cryptoNews, cryptoPosts] = await Promise.all([
+    console.log('🔄  Caching latest data…');
+
+    const [btc, eth, sol, news, posts] = await Promise.all([
       this.makeRequest('/topic/bitcoin/v1'),
       this.makeRequest('/topic/ethereum/v1'),
       this.makeRequest('/topic/solana/v1'),
       this.makeRequest('/category/cryptocurrencies/news/v1'),
-      this.makeRequest('/category/cryptocurrencies/posts/v1')
+      this.makeRequest('/category/cryptocurrencies/posts/v1'),
     ]);
 
-    const processedNews = (cryptoNews?.data || []).slice(0, 15).map(article => ({
-      id: article.id,
-      post_type: article.post_type,
-      post_title: article.post_title,
-      post_link: article.post_link,
-      post_image: article.post_image,
-      post_created: article.post_created,
-      post_sentiment: article.post_sentiment,
-      creator_id: article.creator_id,
-      creator_name: article.creator_name,
-      creator_display_name: article.creator_display_name,
-      creator_followers: article.creator_followers,
-      creator_avatar: article.creator_avatar,
-      interactions_24h: article.interactions_24h,
-      interactions_total: article.interactions_total
-    }));
-
-    const processedPosts = (cryptoPosts?.data || []).slice(0, 10).map(post => ({
-      id: post.id,
-      post_type: post.post_type,
-      post_title: post.post_title,
-      post_link: post.post_link,
-      post_image: post.post_image,
-      post_created: post.post_created,
-      post_sentiment: post.post_sentiment,
-      creator_id: post.creator_id,
-      creator_name: post.creator_name,
-      creator_display_name: post.creator_display_name,
-      creator_followers: post.creator_followers,
-      creator_avatar: post.creator_avatar,
-      interactions_24h: post.interactions_24h,
-      interactions_total: post.interactions_total
+    const trimFeed = (arr, n) => (arr || []).slice(0, n).map(p => ({
+      id: p.id,
+      post_type: p.post_type,
+      post_title: p.post_title,
+      post_link: p.post_link,
+      post_image: p.post_image,
+      post_created: p.post_created,
+      post_sentiment: p.post_sentiment,
+      creator_id: p.creator_id,
+      creator_name: p.creator_name,
+      creator_display_name: p.creator_display_name,
+      creator_followers: p.creator_followers,
+      creator_avatar: p.creator_avatar,
+      interactions_24h: p.interactions_24h,
+      interactions_total: p.interactions_total,
     }));
 
     await Promise.all([
-      this.cacheData('latest_bitcoin', '/topic/bitcoin/v1', bitcoinData?.data || null),
-      this.cacheData('latest_ethereum', '/topic/ethereum/v1', ethereumData?.data || null),
-      this.cacheData('latest_solana', '/topic/solana/v1', solanaData?.data || null),
-      this.cacheData('latest_crypto_news', '/category/cryptocurrencies/news/v1', processedNews),
-      this.cacheData('latest_crypto_posts', '/category/cryptocurrencies/posts/v1', processedPosts)
+      this.cacheData('latest_bitcoin',        '/topic/bitcoin/v1', btc?.data   || null),
+      this.cacheData('latest_ethereum',       '/topic/ethereum/v1', eth?.data  || null),
+      this.cacheData('latest_solana',         '/topic/solana/v1',   sol?.data  || null),
+      this.cacheData('latest_crypto_news',    '/category/cryptocurrencies/news/v1',  trimFeed(news?.data, 15)),
+      this.cacheData('latest_crypto_posts',   '/category/cryptocurrencies/posts/v1', trimFeed(posts?.data, 10)),
     ]);
 
-    console.log('✅ Latest data cached');
+    console.log('✅  Latest cached');
   }
 
-  async cacheData(cacheKey, endpointUrl, data) {
-    try {
-      const { error } = await supabase
-        .from('crypto_cache')
-        .upsert({
-          cache_key: cacheKey,
-          endpoint_url: endpointUrl,
-          data: data,
-          updated_at: new Date().toISOString(),
-          expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(), // 10 minutes
-          response_status: 'success'
-        }, {
-          onConflict: 'cache_key'
-        });
-
-      if (error) {
-        console.error(`❌ Failed to cache ${cacheKey}:`, error);
-        throw error;
-      }
-    } catch (error) {
-      console.error(`❌ Cache error for ${cacheKey}:`, error);
-      throw error;
-    }
+  /* ── helper: UPSERT one record into Supabase ─────────── */
+  async cacheData(cacheKey, endpoint, data) {
+    const { error } = await supabase.from('crypto_cache').upsert(
+      {
+        cache_key: cacheKey,
+        endpoint_url: endpoint,
+        data,
+        updated_at: new Date().toISOString(),
+        expires_at: new Date(Date.now() + 10 * 60_000).toISOString(), // +10 min
+        response_status: 'success',
+      },
+      { onConflict: 'cache_key' },
+    );
+    if (error) throw new Error(`${cacheKey} → ${error.message}`);
   }
 
-  async updateCacheStatus(status, successCount = 0, failedCount = 0, errorMessage = null) {
-    const { error } = await supabase
-      .from('crypto_cache_status')
-      .upsert({
-        id: 1, // Single status record
-        status: status,
-        successful_endpoints: successCount,
-        failed_endpoints: failedCount,
-        error_message: errorMessage,
-        last_full_update: status === 'complete' ? new Date().toISOString() : undefined,
-        updated_at: new Date().toISOString()
-      }, {
-        onConflict: 'id'
-      });
-
-    if (error) {
-      console.error('❌ Failed to update cache status:', error);
-    }
+  /* ── helper: status row (id = 1) ─────────────────────── */
+  async updateCacheStatus(status, ok = 0, fail = 0, msg = null) {
+    const { error } = await supabase.from('crypto_cache_status').upsert(
+      {
+        id: 1,
+        status,
+        successful_endpoints: ok,
+        failed_endpoints: fail,
+        error_message: msg,
+        last_full_update: status === 'complete' ? new Date().toISOString() : null,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'id' },
+    );
+    if (error) console.error('Status-row upsert failed:', error.message);
   }
 }
 
-export default async function handler(req, res) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
+// ────────────────────────────────
+// 3. MAIN ENTRY POINT
+// ────────────────────────────────
+(async () => {
+  const svc = new CachingLunarCrushService();
 
-  const service = new CachingLunarCrushService();
-  
   try {
-    console.log('🚀 Starting crypto data cache update...');
-    await service.updateCacheStatus('updating', 0, 0);
+    console.log('🚀  Starting crypto-cache refresh…');
+    await svc.updateCacheStatus('updating');
 
-    let successCount = 0;
-    let failedCount = 0;
-    const errors = [];
+    let ok = 0, fail = 0, errs = [];
 
-    // Cache all data with error handling
-    try {
-      await service.cacheTrendsData();
-      successCount += 4; // trends has 4 endpoints
-    } catch (error) {
-      console.error('❌ Trends caching failed:', error);
-      failedCount += 4;
-      errors.push(`Trends: ${error.message}`);
-    }
+    const wrap = async (fn, count) => {
+      try       { await fn(); ok   += count; }
+      catch (e) { fail += count; errs.push(e.message); console.error(e.message); }
+    };
 
-    try {
-      await service.cacheMarketData();
-      successCount += 4; // market has 4 endpoints (we're counting logical endpoints)
-    } catch (error) {
-      console.error('❌ Market caching failed:', error);
-      failedCount += 4;
-      errors.push(`Market: ${error.message}`);
-    }
+    await wrap(() => svc.cacheTrendsData(),  4);
+    await wrap(() => svc.cacheMarketData(),  4);
+    await wrap(() => svc.cacheLatestData(),  5);
 
-    try {
-      await service.cacheLatestData();
-      successCount += 5; // latest has 5 endpoints
-    } catch (error) {
-      console.error('❌ Latest caching failed:', error);
-      failedCount += 5;
-      errors.push(`Latest: ${error.message}`);
-    }
+    const final = fail ? 'partial' : 'complete';
+    await svc.updateCacheStatus(final, ok, fail, errs.join('; '));
 
-    // Update final status
-    const finalStatus = failedCount === 0 ? 'complete' : 'partial';
-    const errorMessage = errors.length > 0 ? errors.join('; ') : null;
-    
-    await service.updateCacheStatus(finalStatus, successCount, failedCount, errorMessage);
-
-    console.log(`✅ Cache update complete: ${successCount} success, ${failedCount} failed`);
-    
-    res.status(200).json({
-      success: true,
-      status: finalStatus,
-      successfulEndpoints: successCount,
-      failedEndpoints: failedCount,
-      errors: errors
-    });
-
-  } catch (error) {
-    console.error('❌ Critical cache update error:', error);
-    await service.updateCacheStatus('error', 0, 13, error.message);
-    
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
+    console.log(`🏁  Finished — ${ok} ok, ${fail} failed`);
+    if (fail) process.exit(1);              // mark GHA run red if anything failed
+  } catch (fatal) {
+    console.error('💥  Fatal error:', fatal);
+    await svc.updateCacheStatus('error', 0, 13, fatal.message);
+    process.exit(1);
   }
-}
+})();
