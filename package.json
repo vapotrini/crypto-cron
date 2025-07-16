@@ -1,0 +1,8 @@
+{
+  "name": "crypto-cache",
+  "type": "commonjs",
+  "main": "crypto-cache.js",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.51.0"
+  }
+}
