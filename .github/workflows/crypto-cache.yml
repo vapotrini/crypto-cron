@@ -1,7 +1,7 @@
 name: Update Crypto Cache
 on:
   schedule:
-    - cron: '*/10 * * * *'
+    - cron: '2,12,22,32,42,52 * * * *'  # Every 10 minutes at :02, :12, :22, etc
   workflow_dispatch:
 jobs:
   run:
