@@ -173,7 +173,7 @@ class CachingLunarCrushService {
         endpoint_url: endpointUrl,
         data,
         updated_at  : new Date().toISOString(),
-        expires_at  : new Date(Date.now() + 60 * 60 * 1e3).toISOString(), // +10 min
+        expires_at  : new Date(Date.now() + 3 * 60 * 60 * 1e3).toISOString(), // +3 hours
         response_status: 'success'
       },
       { onConflict: 'cache_key' }
